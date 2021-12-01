@@ -43,16 +43,32 @@
 ADC_HandleTypeDef hadc3;
 DMA_HandleTypeDef hdma_adc3;
 
+TIM_HandleTypeDef htim2;
+
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
+//Výsledek adc konverze - potenciometr
 uint32_t potResult = 0;
-uint32_t lastPulseTime = 0;
-uint32_t timeNow = 0;
-uint32_t timeDelta = 0;
 
-uint8_t lastPinState = 0;
+//Hodnota časovače
+uint32_t uSClock = 0;
+
+//Hodnota časovače na poslední hraně enkoderu
+uint32_t uSlastPulseTime = 0;
+
+//Hodnota časovače na aktuální hraně enkoderu
+uint32_t uStimeNow = 0;
+
+//Rozdíl hodnot časovače mezi hranami
+uint32_t uStimeDelta = 108882172;
+
+//Poslední stav senzoru
+uint8_t lastPinState = 1;
 uint8_t currentPinState = 0;
+
+//Přepočítaná hodnota z potenciometru na očekávanou periodu
+uint32_t requestedSpeed = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -61,6 +77,7 @@ static void MX_GPIO_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_DMA_Init(void);
 static void MX_ADC3_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -101,45 +118,53 @@ int main(void)
   MX_USART3_UART_Init();
   MX_DMA_Init();
   MX_ADC3_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  //Nastavení automatického zapisování stavu potenciomteru do paměti
   HAL_ADC_Start_DMA(&hadc3, &potResult, 1);
+  //Zapnutí časovače - měření v mikrosekundách
+  HAL_TIM_Base_Start(&htim2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	/*
-	HAL_ADC_Start(&hadc3);
-	while(HAL_ADC_PollForConversion(&hadc3, 100) != HAL_OK){
+	  //Přečtění hodnoty časovače
+	 uSClock = __HAL_TIM_GET_COUNTER(&htim2);
 
-	}
-	potResult = HAL_ADC_GetValue(&hadc3);
-	*/
-	potResult++;
-
-	if(potResult>2000){
-
+	 //Vyhodnocení regulátoru
+	if(requestedSpeed<uStimeDelta){
+		//Motor se točí pomaleji než je nastaveno
 		HAL_GPIO_WritePin(HSS_Pin_GPIO_Port, HSS_Pin_Pin, 1);
 		HAL_GPIO_WritePin(LSS_Pin_GPIO_Port, LSS_Pin_Pin, 1);
+
 	}
-	else{
+	if(requestedSpeed>uStimeDelta){
+		//Motor se točí rychleji než je nastaveno
 		HAL_GPIO_WritePin(HSS_Pin_GPIO_Port, HSS_Pin_Pin, 0);
 		HAL_GPIO_WritePin(LSS_Pin_GPIO_Port, LSS_Pin_Pin, 0);
 
 	}
+	//Přečtení stavu senzoru polohy
 	currentPinState = HAL_GPIO_ReadPin(RPM1_GPIO_Port, RPM1_Pin);
+	//Nastavení času v aktuálním cyklu
+	uStimeNow=uSClock;
 	if(currentPinState == 1 && lastPinState == 0){
-		// edge detected
+		// Detekována hrana
+		//Uložení stavu senzoru
 		lastPinState = 1;
-		timeNow = HAL_GetTick();
-		timeDelta = timeNow - lastPulseTime;
-		lastPulseTime = timeNow;
+		//Uložení času poslední hrany
+		uSlastPulseTime = uStimeNow;
 
 	}
 	if(currentPinState == 0){
+		//Resetování stavu senzoru
 		lastPinState = 0;
 	}
+
+	//Vyhodnocení rychlosti otáčení
+	uStimeDelta=uStimeNow-uSlastPulseTime;
 
 
     /* USER CODE END WHILE */
@@ -256,6 +281,51 @@ static void MX_ADC3_Init(void)
   /* USER CODE BEGIN ADC3_Init 2 */
 
   /* USER CODE END ADC3_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 96;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4294967295;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
 
 }
 
@@ -427,8 +497,9 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
+	//Konverze dokončena, uložení hodnot a nastavení vyžadovaných otáček
 	potResult = HAL_ADC_GetValue(hadc);
-	potResult++;
+	requestedSpeed = potResult*2;
 }
 /* USER CODE END 4 */
 
